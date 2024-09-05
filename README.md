@@ -1,0 +1,2 @@
+This Project is aimed at creating a msg transit c/c++ program for transit msgs from host to remote, it could used at middleware to send msg to devices.
+Init design would make it easy, to handle all the devices with callbacks in a large loop like server.
