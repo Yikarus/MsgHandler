@@ -6,38 +6,99 @@
 #include <sys/epoll.h>
 #include <errno.h>
 #include <termios.h>
+#include <string>
+#include <unordered_map>
+#include <functional>
 
 #define MAX_EVENTS 10
 #define BUFFER_SIZE 256
 #define BAUDRATE B9600
 #define PORTS (3) // 假设有三个串口设备
 
-
+using namespace std;
 
 
 class ComDev{
 public:
+    ComDev() : fd(-1), devkind(UnKnown), FromPort(-1), ToPort(-1),
+               callback(std::bind(&ComDev::initCallBack, this, std::placeholders::_1)) {}
     int fd; // handler
-    enum {
-        Gripper, // 爪子
-        Base, // 基座
-        Lazer, // 激光
+    enum DevKind{
+        UnKnown,
+        Gripper = 0x01, // 爪子
+        Base = 0x3E, // 基座
+        Lazer = 0x28, // 激光
         Transit, // 转发
-        Screw, // 丝杆
+        Screw = 0x62, // 丝杆
         ValidNum = Screw
-    } DevKind;
+    };
     DevKind devkind;
     int FromPort;
     int ToPort;
-    typedef void (*Callback)(const char*);
-    Callback InitFunc;
+    string name;
+    typedef std::function<void(const char*)> Callback;
     Callback callback;
+    void initCallBack(const char* buf) {
+        // Msg Handling
+        // Future would make bug like Size Func content ...
+        // Now it's raw data, first byte would be the dev num
+        switch(buf[0]){
+            // Now lazer and Gripper don't have feedback.
+            case DevKind::Lazer:
+            case DevKind::Gripper:
+            case DevKind::Base:
+                devkind = DevKind::Base;
+                callback = std::bind(&ComDev::baseCallBack, this, std::placeholders::_1);
+                break;
+            case DevKind::Screw:
+                devkind = DevKind::Screw;
+                callback = std::bind(&ComDev::screwCallBack, this, std::placeholders::_1);
+                break;
+            default:
+                devkind = DevKind::Transit;
+                callback = std::bind(&ComDev::transitCallBack, this, std::placeholders::_1);
+                break;
+        }
+    }
+    void baseCallBack(const char* buf) {
+        write(ToPort, buf, strlen(buf));
+    }
+    void screwCallBack(const char* buf) {
+        write(ToPort, buf, strlen(buf));
+    }
+
+    void transitCallBack(const char* buf) {
+        write(ToPort, buf, strlen(buf));
+    }
 };
 
-void InitCallBack(const char* msg){
+unordered_map<int, ComDev*> fd2Dev;
+
+char BaseRotorPosRead[] = {0x3e, 0x22, 0x22, 0x33, 0x22};
+char ScrewRotorPosRead[] = {0x3e, 0x22, 0x22, 0x33, 0x22};
+void sendInitMsg(){
     // This is to send msg and receive
-    
+    // send all msgs to the dev
+    int InitNum = 0;
+    for(auto [fd, dev] : fd2Dev){
+        if(dev->devkind == ComDev::DevKind::UnKnown) {
+            write(fd, BaseRotorPosRead, size(BaseRotorPosRead));
+            // TODO: check if need nop
+            write(fd, ScrewRotorPosRead, size(ScrewRotorPosRead));
+        } else if(dev->devkind != ComDev::DevKind::Transit) {
+            InitNum++;
+        }
+    }
+    if(InitNum == PORTS - 2) {
+        for(auto [fd, dev] : fd2Dev){
+            if(dev->devkind == ComDev::DevKind::UnKnown) {
+                dev->devkind = ComDev::DevKind::Gripper;
+                // dev->callback = std::bind(&ComDev::baseCallBack, this, std::placeholders::_1);;
+            }
+        }
+    }
 }
+
 // 初始化串口设备
 int setup_serial_port(const char *port, speed_t baudrate) {
     int fd;
@@ -99,7 +160,7 @@ void handle_events(int epoll_fd, char *buffer) {
 
     for (i = 0; i < num_events; i++) {
         int fd = events[i].data.fd;
-
+        const ComDev& dev = *fd2Dev[fd];
         if (events[i].events & EPOLLIN) {
             ssize_t nread = read(fd, buffer, BUFFER_SIZE - 1);
             if (nread <= 0) {
@@ -111,6 +172,7 @@ void handle_events(int epoll_fd, char *buffer) {
             buffer[nread] = '\0';
             port_name = (strstr((char*)events[i].data.ptr, "/dev/") + 5);
             printf("从 %s 接收到: %s\n", port_name, buffer);
+            dev.callback(buffer);
         }
 
         if (events[i].events & EPOLLOUT) {
@@ -121,10 +183,10 @@ void handle_events(int epoll_fd, char *buffer) {
 }
 
 int main() {
-    int epoll_fd, serial_fds[PORTS];
+    int epoll_fd;
     struct epoll_event ev;
     char buffer[BUFFER_SIZE];
-
+    
     // 创建epoll实例
     epoll_fd = epoll_create1(0);
     if (epoll_fd == -1) {
@@ -133,34 +195,39 @@ int main() {
     }
 
     // 初始化串口设备
-    const char *ports[] = {"/dev/ttyS0", "/dev/ttyS1", "/dev/ttyS2"};
+    ComDev devs[PORTS];
+    devs[0].name = "/dev/tty1";
+    devs[1].name = "/dev/tty2";
+    devs[2].name = "/dev/tty3";
     for (int i = 0; i < PORTS; ++i) {
-        serial_fds[i] = setup_serial_port(ports[i], BAUDRATE);
-        if (serial_fds[i] == -1) {
-            fprintf(stderr, "无法初始化串口设备 %s\n", ports[i]);
-            continue;
+        devs[i].fd = setup_serial_port(devs[i].name.c_str(), BAUDRATE);
+        if (devs[i].fd == -1) {
+            fprintf(stderr, "无法初始化串口设备 %s\n", devs[i].name.c_str());
+            exit(1);
         }
 
         // 注册事件
-        ev.events = EPOLLIN | EPOLLOUT;
-        ev.data.fd = serial_fds[i];
-        ev.data.ptr = (void *)ports[i]; // 存储端口号，方便识别
-        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, serial_fds[i], &ev) == -1) {
+        ev.events = EPOLLIN;
+        ev.data.fd = devs[i].fd;
+        fd2Dev[devs[i].fd] = &devs[i];
+        ev.data.ptr = (void *)devs[i].name.c_str(); // 存储端口号，方便识别
+        if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, devs[i].fd, &ev) == -1) {
             perror("epoll_ctl: add");
-            fprintf(stderr, "无法添加串口设备 %s 到 epoll\n", ports[i]);
-            close(serial_fds[i]);
+            fprintf(stderr, "无法添加串口设备 %s 到 epoll\n", devs[i].name.c_str());
+            close(devs[i].fd);
             continue;
         }
     }
 
+    sendInitMsg();
     while (1) {
         handle_events(epoll_fd, buffer);
     }
 
     // 关闭所有串口设备
     for (int i = 0; i < PORTS; ++i) {
-        if (serial_fds[i] != -1) {
-            close(serial_fds[i]);
+        if (devs[i].fd != -1) {
+            close(devs[i].fd);
         }
     }
 
