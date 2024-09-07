@@ -14,10 +14,14 @@
 #define BUFFER_SIZE 256
 #define BAUDRATE B9600
 #define PORTS (3) // 假设有三个串口设备
-
+#define FEEDBACKPORTS (3)
 using namespace std;
 
+class ComDev;
+unordered_map<int, ComDev*> fd2Dev;
 
+static int KnownDevs;
+static int TransitPort;
 class ComDev{
 public:
     ComDev() : fd(-1), devkind(UnKnown), FromPort(-1), ToPort(-1),
@@ -44,35 +48,55 @@ public:
         // Now it's raw data, first byte would be the dev num
         switch(buf[0]){
             // Now lazer and Gripper don't have feedback.
-            case DevKind::Lazer:
-            case DevKind::Gripper:
+            // case DevKind::Lazer:
+            // case DevKind::Gripper:
+            // TODO: if transit port send BaseMotor and Screw command, need to check
             case DevKind::Base:
                 devkind = DevKind::Base;
                 callback = std::bind(&ComDev::baseCallBack, this, std::placeholders::_1);
+                KnownDevs++;
                 break;
             case DevKind::Screw:
                 devkind = DevKind::Screw;
                 callback = std::bind(&ComDev::screwCallBack, this, std::placeholders::_1);
+                KnownDevs++;
                 break;
             default:
                 devkind = DevKind::Transit;
                 callback = std::bind(&ComDev::transitCallBack, this, std::placeholders::_1);
+                TransitPort = fd;
+                KnownDevs++;
                 break;
         }
+        if (KnownDevs == FEEDBACKPORTS){
+            for (auto [fd, dev] : fd2Dev) {
+                if (dev->devkind == ComDev::DevKind::UnKnown) {
+                    devkind = DevKind::Gripper;
+                    callback = std::bind(&ComDev::baseCallBack, this, std::placeholders::_1);
+                    KnownDevs++;
+                }
+            }
+        }
     }
+
     void baseCallBack(const char* buf) {
-        write(ToPort, buf, strlen(buf));
+        write(TransitPort, buf, strlen(buf));
     }
     void screwCallBack(const char* buf) {
-        write(ToPort, buf, strlen(buf));
+        write(TransitPort, buf, strlen(buf));
     }
 
     void transitCallBack(const char* buf) {
+        int Kind = buf[0]; // find the kind
+        ToPort = -1;
+        for(auto [fd, dev] : fd2Dev) {
+            if(dev->devkind == Kind) {
+                ToPort = fd;
+            }
+        }
         write(ToPort, buf, strlen(buf));
     }
 };
-
-unordered_map<int, ComDev*> fd2Dev;
 
 char BaseRotorPosRead[] = {0x3e, 0x22, 0x22, 0x33, 0x22};
 char ScrewRotorPosRead[] = {0x3e, 0x22, 0x22, 0x33, 0x22};
@@ -87,14 +111,6 @@ void sendInitMsg(){
             write(fd, ScrewRotorPosRead, size(ScrewRotorPosRead));
         } else if(dev->devkind != ComDev::DevKind::Transit) {
             InitNum++;
-        }
-    }
-    if(InitNum == PORTS - 2) {
-        for(auto [fd, dev] : fd2Dev){
-            if(dev->devkind == ComDev::DevKind::UnKnown) {
-                dev->devkind = ComDev::DevKind::Gripper;
-                // dev->callback = std::bind(&ComDev::baseCallBack, this, std::placeholders::_1);;
-            }
         }
     }
 }
