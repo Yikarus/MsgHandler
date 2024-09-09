@@ -94,6 +94,10 @@ public:
                 ToPort = fd;
             }
         }
+        // Handle the Msg
+        // If the first is bytes num
+        // write(ToPort, buf + 1, buf[0]);
+        // TODO: make a ring buf
         write(ToPort, buf, strlen(buf));
     }
 };
