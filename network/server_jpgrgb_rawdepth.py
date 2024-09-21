@@ -42,20 +42,17 @@ def send_image(sock, color_image, depth_image):
     # sock.sendall(image)  # 发送图像数据
     print("color.shape:", color_image.shape)
     print("depth.shape:", depth_image.shape)
-    height, width, channel = color_image.shape
-    color_size = height * width * channel
-    height, width = depth_image.shape
-    depth_size = height * width
     _, color_buffer = cv2.imencode('.jpg', color_image)
-    params = [int(cv2.IMWRITE_PNG_COMPRESSION), 9]
-    _, depth_buffer = cv2.imencode('.png', depth_image, params)
-    print("send color len:", len(color_buffer.tobytes()), " depth:", len(depth_buffer.tobytes()))
-    size_data = struct.pack('!II', len(color_buffer.tobytes()), len(depth_buffer.tobytes()))
+    # _, depth_buffer = cv2.imencode('.jpg', depth_image)
+    height, width = depth_image.shape
+    depth_size = height * width * 2
+    print("send color len:", len(color_buffer.tobytes()), " depth:", depth_size)
+    size_data = struct.pack('!II', len(color_buffer.tobytes()), depth_size)
     sock.sendall(size_data)
     sock.sendall(color_buffer.tobytes())  # 发送图像数据
-    sock.sendall(depth_buffer.tobytes())
-    print("color.jpg:", color_size, " : ", len(color_buffer.tobytes()))
-    print("depth.png:", depth_size, " : ", len(depth_buffer.tobytes()))
+    sock.sendall(depth_image)
+    print("color.jpg:", len(color_buffer.tobytes()))
+    print("depth.jpg:", len(depth_image))
 
 class TemporalFilter:
     def __init__(self, alpha):
@@ -82,7 +79,7 @@ def main():
         depth_profile = depth_profile_list.get_default_video_stream_profile()
         color_profile = color_profile_list.get_video_stream_profile(848, 0, OBFormat.RGB, 30)
         # color_profile = color_profile_list.get_default_video_stream_profile()
-        assert depth_profile_list is not None and color_profile_list is not None
+        assert depth_profile is not None and color_profile is not None
         print("depth profile: ", depth_profile_list)
         print("color profile: ", color_profile_list)
         config.enable_stream(depth_profile)
@@ -125,21 +122,20 @@ def main():
                 depth_data = depth_data.astype(np.float32) * scale
                 depth_data = np.where((depth_data > MIN_DEPTH) & (depth_data < MAX_DEPTH), depth_data, 0)
                 depth_data = depth_data.astype(np.uint16)
-                # # Apply temporal filtering
+                # Apply temporal filtering
                 depth_data = temporal_filter.process(depth_data)
                 center_y = int(height / 2)
                 center_x = int(width / 2)
-                # center_distance = depth_data[center_y, center_x]
+                center_distance = depth_data[center_y, center_x]
 
-                # current_time = time.time()
-                # if current_time - last_print_time >= PRINT_INTERVAL:
-                #     print("center distance: ", center_distance)
-                #     last_print_time = current_time
+                current_time = time.time()
+                if current_time - last_print_time >= PRINT_INTERVAL:
+                    print("center distance: ", center_distance)
+                    last_print_time = current_time
 
                 # depth_image = cv2.normalize(depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
                 # depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
-                print("center distance before normalize", depth_data[center_y, center_x])
-                # print("center distance after normalize", depth_image[center_y, center_x])
+
                 # get color frame
                 color_frame = frames.get_color_frame()
                 if color_frame is None:

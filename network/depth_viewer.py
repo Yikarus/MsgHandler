@@ -43,14 +43,16 @@ def send_image(sock, color_image, depth_image):
     print("color.shape:", color_image.shape)
     print("depth.shape:", depth_image.shape)
     _, color_buffer = cv2.imencode('.jpg', color_image)
-    _, depth_buffer = cv2.imencode('.jpg', depth_image)
-    print("send color len:", len(color_buffer.tobytes()), " depth:", len(depth_buffer.tobytes()))
-    size_data = struct.pack('!II', len(color_buffer.tobytes()), len(depth_buffer.tobytes()))
+    # _, depth_buffer = cv2.imencode('.jpg', depth_image)
+    height, width = depth_image.shape
+    depth_size = height * width * 2
+    print("send color len:", len(color_buffer.tobytes()), " depth:", depth_size)
+    size_data = struct.pack('!II', len(color_buffer.tobytes()), depth_size)
     sock.sendall(size_data)
     sock.sendall(color_buffer.tobytes())  # 发送图像数据
-    sock.sendall(depth_buffer.tobytes())
+    sock.sendall(depth_image)
     print("color.jpg:", len(color_buffer.tobytes()))
-    print("depth.jpg:", len(depth_buffer.tobytes()))
+    print("depth.jpg:", len(depth_image))
 
 class TemporalFilter:
     def __init__(self, alpha):
@@ -77,7 +79,7 @@ def main():
         depth_profile = depth_profile_list.get_default_video_stream_profile()
         color_profile = color_profile_list.get_video_stream_profile(848, 0, OBFormat.RGB, 30)
         # color_profile = color_profile_list.get_default_video_stream_profile()
-        assert depth_profile_list is not None and color_profile_list is not None
+        assert depth_profile is not None and color_profile is not None
         print("depth profile: ", depth_profile_list)
         print("color profile: ", color_profile_list)
         config.enable_stream(depth_profile)
@@ -131,8 +133,8 @@ def main():
                     print("center distance: ", center_distance)
                     last_print_time = current_time
 
-                depth_image = cv2.normalize(depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
+                # depth_image = cv2.normalize(depth_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                # depth_image = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
 
                 # get color frame
                 color_frame = frames.get_color_frame()
@@ -143,7 +145,7 @@ def main():
                 if color_image is None:
                     print("failed to convert frame to image")
                     continue
-                send_image(conn, color_image, depth_image)
+                send_image(conn, color_image, depth_data)
                 time.sleep(TIME_WAIT)
             except BrokenPipeError:
                 print("Client disconnected")
